@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+
+# Virtual environments
+venv/
+env/
+.env/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data — never commit raw or processed data
+data/raw/*
+data/processed/*
+data/external/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/external/.gitkeep
+
+# Trained models — regenerate with: python main.py train
+models/saved_models/*.pkl
+models/saved_models/*.joblib
+!models/saved_models/.gitkeep
+
+# Generated outputs
+reports/figures/*.png
+reports/figures/*.jpg
+reports/*.json
+reports/logs/
+!reports/figures/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+
+# Distribution
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+htmlcov/
+.coverage

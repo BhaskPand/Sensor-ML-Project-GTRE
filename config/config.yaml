@@ -1,0 +1,124 @@
+# =============================================================
+#  NASA CMAPSS — Sensor Validation & Fault Identification
+#  Master Configuration File
+#  Edit this file to change dataset, model params, or paths
+# =============================================================
+
+project:
+  name    : "NASA CMAPSS Sensor Fault Detection"
+  version : "2.0.0"
+  author  : "GTRE ML Team"
+
+# ── Paths ─────────────────────────────────────────────────────
+paths:
+  raw_data      : "data/raw/"
+  processed_data: "data/processed/"
+  saved_models  : "models/saved_models/"
+  reports       : "reports/"
+  figures       : "reports/figures/"
+  logs          : "reports/logs/"
+
+# ── Dataset ───────────────────────────────────────────────────
+data:
+  dataset_id : "FD001"          # FD001 | FD002 | FD003 | FD004
+  train_file : "train_FD001.txt"
+  test_file  : "test_FD001.txt"
+  rul_file   : "RUL_FD001.txt"
+  columns:
+    - unit_id
+    - cycle
+    - op_setting_1
+    - op_setting_2
+    - op_setting_3
+    - s1
+    - s2
+    - s3
+    - s4
+    - s5
+    - s6
+    - s7
+    - s8
+    - s9
+    - s10
+    - s11
+    - s12
+    - s13
+    - s14
+    - s15
+    - s16
+    - s17
+    - s18
+    - s19
+    - s20
+    - s21
+
+# ── Preprocessing ─────────────────────────────────────────────
+preprocessing:
+  rul_clip             : 125    # Standard CMAPSS practice
+  rolling_window       : 5      # Noise smoothing window (cycles)
+  feature_window       : 10     # Rolling stat window for features
+  std_threshold        : 0.01   # Drop sensors with std < this
+  outlier_iqr_factor   : 3.0    # IQR multiplier for outlier clip
+  healthy_life_fraction: 0.30   # First 30% = healthy baseline
+  test_size            : 0.20   # Engine-level train/test split
+  random_state         : 42
+
+# ── Feature Engineering ───────────────────────────────────────
+features:
+  rolling_stats  : true
+  health_index   : true
+  pca_variance   : 0.95         # Keep PCs explaining 95% variance
+
+# ── Clustering ────────────────────────────────────────────────
+clustering:
+  k_min        : 2
+  k_max        : 8
+  n_init       : 10
+  random_state : 42
+
+# ── Anomaly Detection ─────────────────────────────────────────
+anomaly:
+  contamination      : 0.05     # Expected anomaly fraction
+  iso_n_estimators   : 200
+  lof_n_neighbors    : 20
+  ensemble_min_votes : 2        # Both methods must agree
+
+# ── Models ────────────────────────────────────────────────────
+models:
+  fault_threshold_cycles: 30    # RUL < 30 → fault label = 1
+
+  xgb_regressor:
+    n_estimators          : 500
+    max_depth             : 6
+    learning_rate         : 0.05
+    subsample             : 0.8
+    colsample_bytree      : 0.8
+    objective             : "reg:squarederror"
+    early_stopping_rounds : 30
+    eval_metric           : "rmse"
+    random_state          : 42
+
+  xgb_classifier:
+    n_estimators  : 300
+    max_depth     : 5
+    learning_rate : 0.05
+    eval_metric   : "auc"
+    random_state  : 42
+
+# ── Evaluation Targets ────────────────────────────────────────
+evaluation:
+  rmse_target : 15.0
+  mae_target  : 12.0
+  r2_target   : 0.90
+  auc_target  : 0.97
+  f1_target   : 0.90
+
+# ── Sensor Validation ─────────────────────────────────────────
+sensor_validation:
+  sigma_bounds : 3.0
+  ci_level     : 0.95
+
+# ── Logging ───────────────────────────────────────────────────
+logging:
+  level   : "INFO"
+  console : true

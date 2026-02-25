@@ -1,0 +1,13 @@
+{
+    "recommendations": [
+        "ms-python.python",
+        "ms-python.debugpy",
+        "ms-toolsai.jupyter",
+        "ms-toolsai.jupyter-keymap",
+        "ms-toolsai.jupyter-renderers",
+        "ms-python.pylint",
+        "njpwerner.autodocstring",
+        "eamodio.gitlens",
+        "redhat.vscode-yaml"
+    ]
+}

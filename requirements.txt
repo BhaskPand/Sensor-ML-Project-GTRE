@@ -1,0 +1,28 @@
+# ============================================================
+#  NASA CMAPSS Sensor Fault Detection
+#  Python Dependencies — install with:
+#    pip install -r requirements.txt
+# ============================================================
+
+# Core
+numpy==1.26.4
+pandas==2.2.1
+scipy==1.12.0
+pyyaml==6.0.1
+joblib==1.3.2
+
+# Machine Learning
+scikit-learn==1.4.1
+xgboost==2.0.3
+
+# Visualisation
+matplotlib==3.8.3
+seaborn==0.13.2
+
+# Explainability
+shap==0.45.0
+
+# Notebook
+jupyter==1.0.0
+ipywidgets==8.1.2
+ipykernel==6.29.3
