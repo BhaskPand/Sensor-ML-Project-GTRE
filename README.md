@@ -1,5 +1,5 @@
 # 🚀 NASA CMAPSS — Sensor Validation & Fault Identification
-### DRDO / GTRE | Turbofan Engine Prognostics & Health Management
+### Turbofan Engine Prognostics & Health Management
 
 ---
 
