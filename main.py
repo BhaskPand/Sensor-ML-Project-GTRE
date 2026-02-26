@@ -1,18 +1,17 @@
 """
 main.py
-───────
+-------
 Single entry point for the full pipeline.
 
 Commands
-────────
-  python main.py train      →  Full pipeline: load → preprocess → features → train
-  python main.py evaluate   →  Load saved models, evaluate on test set
-  python main.py predict    →  Run predictions, save to CSV
-  python main.py visualize  →  Generate all plots
-  python main.py all        →  Everything end-to-end  (default)
+--------
+  python main.py train      ->  load -> preprocess -> features -> train
+  python main.py evaluate   ->  evaluate saved models on hold-out set
+  python main.py visualize  ->  generate all plots
+  python main.py all        ->  everything end-to-end (default)
 
 Examples
-────────
+--------
   python main.py all
   python main.py train
   python main.py evaluate
@@ -21,25 +20,28 @@ Examples
 import argparse
 import sys
 import pandas as pd
+import numpy as np
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from src.utils.helpers             import load_config, get_logger, ensure_dirs, banner, load_artifact
-from src.data.make_dataset         import make_dataset
-from src.data.preprocess           import preprocess
-from src.features.build_features   import build_features
-from src.models.train              import train_all
-from src.models.predict            import (load_all_models, predict_batch,
-                                            SensorValidator, sensor_fault_scores)
-from src.models.evaluate           import evaluate_all
-from src.visualization.visualize   import generate_all_plots
+from src.utils.helpers           import (load_config, get_logger,
+                                          ensure_dirs, banner, load_artifact,
+                                          save_artifact)
+from src.data.make_dataset       import make_dataset
+from src.data.preprocess         import preprocess
+from src.features.build_features import build_features
+from src.models.train            import train_all, engine_split
+from src.models.predict          import (load_all_models, predict_batch,
+                                          SensorValidator, sensor_fault_scores)
+from src.models.evaluate         import evaluate_all
+from src.visualization.visualize import generate_all_plots
 
 
-# ─────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 # PIPELINE STAGES
-# ─────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 
 def stage_data(config):
     raw  = make_dataset(config)
@@ -53,29 +55,56 @@ def stage_features(proc, config):
 
 
 def stage_train(feat, config):
+    """
+    Train models on feat['train'].
+    Returns trained dict which includes split['df_test'] --
+    the held-out engine rows WITH true RUL and fault labels.
+    This is what we evaluate on.
+    """
     return train_all(feat["train"], feat["feature_cols"], config)
 
 
-def stage_evaluate(feat, trained, config, log):
-    models  = load_all_models(config)
-    df_pred = predict_batch(feat["test"], models, config, log)
+def stage_predict(trained, models, config, log):
+    """
+    Run predictions on the held-out engine rows from training split.
 
-    # Build SensorValidator from healthy portion of training data
-    sensors     = load_artifact("active_sensors", config)
-    df_healthy  = feat["train"][feat["train"]["life_pct"] <= 0.30]
-    validator   = SensorValidator(df_healthy, sensors, config)
+    KEY FIX: We evaluate on split['df_test'] (hold-out training engines)
+    NOT on the NASA test file. The NASA test file engines don't run to
+    failure so they have no true RUL labels to evaluate against.
 
-    # Sensor fault scores
-    df_norm = df_pred[df_pred["anomaly_ens"] == 0]
-    df_anom = df_pred[df_pred["anomaly_ens"] == 1]
-    if len(df_anom) > 0:
-        scores = sensor_fault_scores(df_norm, df_anom, sensors)
-        log.info("\n  Top faulty sensors:")
-        for s, v in scores.head(5).items():
-            log.info(f"    {s}: {v:.4f}")
+    split['df_test'] already has:
+      - All feature columns (produced by build_features)
+      - True RUL labels
+      - True fault labels
+    """
+    split  = trained["split"]
+    df_eval = split["df_test"].copy()   # held-out rows WITH labels
 
-    metrics = evaluate_all(df_pred, trained["split"], config)
-    return df_pred, metrics, validator
+    feature_cols = load_artifact("feature_cols", config)
+
+    # Apply the saved feat_scaler (same one used at training time)
+    feat_scaler  = load_artifact("feat_scaler", config)
+    X_eval = df_eval[feature_cols].fillna(0).values
+    X_sc   = feat_scaler.transform(X_eval)
+
+    # Run all models
+    df_eval["pred_rul"]      = np.clip(
+        models["rul_model"].predict(X_sc), 0, None)
+    df_eval["fault_prob"]    = models["fault_model"].predict_proba(X_sc)[:, 1]
+    df_eval["is_fault_pred"] = (df_eval["fault_prob"] >= 0.5).astype(int)
+
+    min_votes = config["anomaly"]["ensemble_min_votes"]
+    iso_flags = (models["iso_forest"].predict(X_sc) == -1).astype(int)
+    lof_flags = (models["lof"].predict(X_sc)        == -1).astype(int)
+    df_eval["anomaly_iso"] = iso_flags
+    df_eval["anomaly_lof"] = lof_flags
+    df_eval["anomaly_ens"] = ((iso_flags + lof_flags) >= min_votes).astype(int)
+
+    log.info(f"  Evaluated on {len(df_eval):,} hold-out rows  "
+             f"({split['te_units'].shape[0]} unseen engines)")
+    log.info(f"  Ensemble anomalies: {df_eval['anomaly_ens'].sum():,}")
+
+    return df_eval
 
 
 def stage_visualize(feat, df_pred, trained, config):
@@ -91,35 +120,37 @@ def stage_visualize(feat, df_pred, trained, config):
     )
 
 
-# ─────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 # FINAL SUMMARY
-# ─────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 
 def print_summary(metrics: dict) -> None:
-    reg = metrics["regression"]
-    clf = metrics["classification"]
+    if not metrics:
+        return
+    reg = metrics.get("regression", {})
+    clf = metrics.get("classification", {})
     banner("FINAL RESULTS SUMMARY")
     print(f"  RUL Regression")
-    print(f"    RMSE       : {reg['rmse']:.3f} cycles")
-    print(f"    R²         : {reg['r2']:.4f}")
-    print(f"    NASA Score : {reg['nasa_score']:.1f}")
-    print(f"    Grade      : {reg['grade']}")
+    print(f"    RMSE       : {reg.get('rmse', 0):.3f} cycles")
+    print(f"    R2         : {reg.get('r2', 0):.4f}")
+    print(f"    NASA Score : {reg.get('nasa_score', 0):.1f}")
+    print(f"    Grade      : {reg.get('grade', 'N/A')}")
     print()
     print(f"  Fault Classification")
-    print(f"    Accuracy   : {clf['accuracy']*100:.2f}%")
-    print(f"    Recall     : {clf['recall']*100:.2f}%  ← most critical")
-    print(f"    F1 Score   : {clf['f1']*100:.2f}%")
-    print(f"    AUC-ROC    : {clf['auc']:.4f}")
-    print(f"    Grade      : {clf['grade']}")
+    print(f"    Accuracy   : {clf.get('accuracy', 0)*100:.2f}%")
+    print(f"    Recall     : {clf.get('recall', 0)*100:.2f}%  (most critical)")
+    print(f"    F1 Score   : {clf.get('f1', 0)*100:.2f}%")
+    print(f"    AUC-ROC    : {clf.get('auc', 0):.4f}")
+    print(f"    Grade      : {clf.get('grade', 'N/A')}")
     print()
-    print("  All plots saved to  reports/figures/")
-    print("  All models saved to models/saved_models/")
+    print("  Plots   -> reports/figures/")
+    print("  Models  -> models/saved_models/")
     print()
 
 
-# ─────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 # CLI
-# ─────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -129,15 +160,15 @@ def parse_args():
     )
     p.add_argument(
         "command",
-        nargs    = "?",
-        default  = "all",
-        choices  = ["all", "train", "evaluate", "predict", "visualize"],
-        help     = "Pipeline stage to run (default: all)"
+        nargs   = "?",
+        default = "all",
+        choices = ["all", "train", "evaluate", "visualize"],
+        help    = "Pipeline stage to run (default: all)"
     )
     p.add_argument(
         "--config",
         default = "config/config.yaml",
-        help    = "Path to config file (default: config/config.yaml)"
+        help    = "Path to config file"
     )
     return p.parse_args()
 
@@ -148,69 +179,90 @@ def main():
     log    = get_logger("main", config)
     ensure_dirs(config)
 
-    log.info(f"Command  : {args.command.upper()}")
-    log.info(f"Dataset  : {config['data']['dataset_id']}")
+    log.info(f"Command : {args.command.upper()}")
+    log.info(f"Dataset : {config['data']['dataset_id']}")
 
-    cmd = args.command
+    cmd     = args.command
+    feat    = None
+    trained = None
+    df_pred = None
+    metrics = None
 
-    # ── TRAIN (includes data + features + train) ──────────
+    # -- TRAIN ------------------------------------------------
     if cmd in ("all", "train"):
         raw, proc = stage_data(config)
         feat      = stage_features(proc, config)
         trained   = stage_train(feat, config)
 
-    # ── EVALUATE ──────────────────────────────────────────
-    if cmd in ("all", "evaluate", "predict"):
-        if cmd not in ("all", "train"):
-            # Load from disk
+    # -- EVALUATE ---------------------------------------------
+    if cmd in ("all", "evaluate"):
+
+        # If we only ran evaluate (not train), reload from disk
+        if feat is None or trained is None:
+            log.info("Loading saved artifacts from disk ...")
             did      = config["data"]["dataset_id"]
             pdir     = Path(config["paths"]["processed_data"])
-            df_train = pd.read_csv(pdir / f"train_{did}_features.csv")
-            df_test  = pd.read_csv(pdir / f"test_{did}_features.csv")
-            feat_cols= load_artifact("feature_cols", config)
-            feat     = {
-                "train"       : df_train,
-                "test"        : df_test,
-                "feature_cols": feat_cols,
+
+            df_train_f = pd.read_csv(pdir / f"train_{did}_features.csv")
+            feature_cols = load_artifact("feature_cols", config)
+            feat = {
+                "train"       : df_train_f,
+                "feature_cols": feature_cols,
             }
-            # Reconstruct a minimal split dict
-            from src.models.train import engine_split
-            from src.utils.helpers import load_config as _lc
-            split   = engine_split(df_train, feat_cols,
-                                   config["preprocessing"]["test_size"],
-                                   config["preprocessing"]["random_state"])
+
+            # Reconstruct the same split (same random_state = same engines)
+            split = engine_split(
+                df_train_f, feature_cols,
+                config["preprocessing"]["test_size"],
+                config["preprocessing"]["random_state"]
+            )
+            # Override with saved scaler (don't refit)
+            split["feat_scaler"] = load_artifact("feat_scaler", config)
+            X_te = df_train_f[
+                df_train_f["unit_id"].isin(split["te_units"])
+            ][feature_cols].fillna(0).values
+            split["X_test"] = split["feat_scaler"].transform(X_te)
             trained = {"split": split}
 
         models  = load_all_models(config)
-        df_pred = predict_batch(feat["test"], models, config, log)
+        df_pred = stage_predict(trained, models, config, log)
         metrics = evaluate_all(df_pred, trained["split"], config)
 
-        # Save predictions
+        # Save predictions for later visualisation
         out = Path(config["paths"]["processed_data"]) / "predictions.csv"
         df_pred.to_csv(out, index=False)
-        log.info(f"Predictions saved → {out}")
+        log.info(f"Predictions saved -> {out}")
 
         if cmd == "all":
             print_summary(metrics)
 
-    # ── VISUALIZE ─────────────────────────────────────────
+    # -- VISUALIZE --------------------------------------------
     if cmd in ("all", "visualize"):
-        if "df_pred" not in dir():
-            did      = config["data"]["dataset_id"]
-            pdir     = Path(config["paths"]["processed_data"])
-            df_pred  = pd.read_csv(pdir / "predictions.csv")
+
+        if feat is None:
+            did        = config["data"]["dataset_id"]
+            pdir       = Path(config["paths"]["processed_data"])
             df_train_f = pd.read_csv(pdir / f"train_{did}_features.csv")
-            feat_cols= load_artifact("feature_cols", config)
-            feat     = {"train": df_train_f, "feature_cols": feat_cols}
-            from src.models.train import engine_split
-            split    = engine_split(df_train_f, feat_cols,
-                                    config["preprocessing"]["test_size"],
-                                    config["preprocessing"]["random_state"])
-            trained  = {"split": split}
+            feat       = {"train": df_train_f,
+                          "feature_cols": load_artifact("feature_cols", config)}
+
+        if df_pred is None:
+            pdir    = Path(config["paths"]["processed_data"])
+            df_pred = pd.read_csv(pdir / "predictions.csv")
+
+        if trained is None:
+            feature_cols = load_artifact("feature_cols", config)
+            split = engine_split(
+                feat["train"], feature_cols,
+                config["preprocessing"]["test_size"],
+                config["preprocessing"]["random_state"]
+            )
+            split["feat_scaler"] = load_artifact("feat_scaler", config)
+            trained = {"split": split}
 
         stage_visualize(feat, df_pred, trained, config)
 
-    banner("PIPELINE COMPLETE ✓")
+    banner("PIPELINE COMPLETE [OK]")
 
 
 if __name__ == "__main__":

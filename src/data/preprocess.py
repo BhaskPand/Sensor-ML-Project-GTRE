@@ -1,11 +1,11 @@
 """
 src/data/preprocess.py
-──────────────────────
+----------------------
 Clean, smooth, scale sensor data.
 Identifies active sensors, removes noise, clips outliers,
 applies MinMax scaling, and saves fitted scalers.
 
-Milestone M1 — Data Pre-Processing and Cleaning
+Milestone M1 -- Data Pre-Processing and Cleaning
 """
 
 import pandas as pd
@@ -24,9 +24,9 @@ SENSOR_COLS = [f"s{i}" for i in range(1, 22)]
 OP_COLS     = ["op_setting_1", "op_setting_2", "op_setting_3"]
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # SENSOR SELECTION
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 
 def identify_sensors(df: pd.DataFrame, std_thresh: float = 0.01):
     """
@@ -39,9 +39,9 @@ def identify_sensors(df: pd.DataFrame, std_thresh: float = 0.01):
     return active, const
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # CLEANING
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 
 def drop_useless_cols(df: pd.DataFrame, const_sensors: list) -> pd.DataFrame:
     """Remove constant sensors and operating condition columns."""
@@ -53,9 +53,9 @@ def impute_missing(df: pd.DataFrame, sensors: list, log) -> pd.DataFrame:
     """Fill missing values with per-column median."""
     n = df[sensors].isnull().sum().sum()
     if n == 0:
-        log.info("  No missing values ✓")
+        log.info("  No missing values [OK]")
         return df
-    log.warning(f"  {n} missing values found — imputing with median")
+    log.warning(f"  {n} missing values found -- imputing with median")
     df = df.copy()
     for s in sensors:
         if df[s].isnull().any():
@@ -66,8 +66,8 @@ def impute_missing(df: pd.DataFrame, sensors: list, log) -> pd.DataFrame:
 def clip_outliers(df: pd.DataFrame, sensors: list,
                   factor: float = 3.0) -> pd.DataFrame:
     """
-    Clip values beyond Q1 − factor×IQR and Q3 + factor×IQR.
-    factor=3 is conservative — only extreme outliers are clipped.
+    Clip values beyond Q1 − factorxIQR and Q3 + factorxIQR.
+    factor=3 is conservative -- only extreme outliers are clipped.
     """
     df = df.copy()
     for s in sensors:
@@ -78,9 +78,9 @@ def clip_outliers(df: pd.DataFrame, sensors: list,
     return df
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # SMOOTHING
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 
 def rolling_smooth(df: pd.DataFrame, sensors: list,
                    window: int = 5) -> pd.DataFrame:
@@ -95,18 +95,19 @@ def rolling_smooth(df: pd.DataFrame, sensors: list,
         for s in sensors:
             df.loc[m, s] = (df.loc[m, s]
                              .rolling(window, min_periods=1)
-                             .mean())
+                             .mean()
+                             .astype(df[s].dtype))
     return df
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # SCALING
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 
 def fit_and_scale(df_train: pd.DataFrame, df_test: pd.DataFrame,
                   sensors: list, config: dict):
     """
-    Fit MinMaxScaler on training data → transform both sets.
+    Fit MinMaxScaler on training data -> transform both sets.
     Scaler is saved for use at inference time.
     Returns (df_train_scaled, df_test_scaled, scaler).
     """
@@ -121,9 +122,9 @@ def fit_and_scale(df_train: pd.DataFrame, df_test: pd.DataFrame,
     return df_tr, df_te, scaler
 
 
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 # MAIN PIPELINE
-# ─────────────────────────────────────────────────────────────
+# -------------------------------------------------------------
 
 @timer
 def preprocess(df_train: pd.DataFrame, df_test: pd.DataFrame,
@@ -139,7 +140,7 @@ def preprocess(df_train: pd.DataFrame, df_test: pd.DataFrame,
     4. Clip outliers (IQR method)
     5. Rolling mean smoothing per engine
     6. Compute life_pct (position in engine lifecycle)
-    7. Fit MinMaxScaler on train → transform both
+    7. Fit MinMaxScaler on train -> transform both
     8. Save scaler + active sensor list
     9. Write processed CSVs
 
@@ -154,48 +155,48 @@ def preprocess(df_train: pd.DataFrame, df_test: pd.DataFrame,
     pdir = Path(config["paths"]["processed_data"])
     pdir.mkdir(parents=True, exist_ok=True)
 
-    # 1 ─ Sensor selection
+    # 1 - Sensor selection
     active, const = identify_sensors(df_train, pc["std_threshold"])
     log.info(f"  Active sensors  ({len(active)}): {active}")
     log.info(f"  Constant sensors ({len(const)}): {const}")
 
-    # 2 ─ Drop useless columns
+    # 2 - Drop useless columns
     df_train = drop_useless_cols(df_train, const)
     df_test  = drop_useless_cols(df_test,  const)
 
-    # 3 ─ Missing values
+    # 3 - Missing values
     df_train = impute_missing(df_train, active, log)
     df_test  = impute_missing(df_test,  active, log)
 
-    # 4 ─ Outlier clipping
+    # 4 - Outlier clipping
     df_train = clip_outliers(df_train, active, pc["outlier_iqr_factor"])
     df_test  = clip_outliers(df_test,  active, pc["outlier_iqr_factor"])
-    log.info(f"  Outliers clipped (IQR×{pc['outlier_iqr_factor']}) ✓")
+    log.info(f"  Outliers clipped (IQRx{pc['outlier_iqr_factor']}) [OK]")
 
-    # 5 ─ Smoothing
+    # 5 - Smoothing
     w        = pc["rolling_window"]
     df_train = rolling_smooth(df_train, active, w)
     df_test  = rolling_smooth(df_test,  active, w)
-    log.info(f"  Rolling smooth (window={w}) ✓")
+    log.info(f"  Rolling smooth (window={w}) [OK]")
 
-    # 6 ─ Life fraction
+    # 6 - Life fraction
     for df in [df_train, df_test]:
         mx = df.groupby("unit_id")["cycle"].transform("max")
         df["life_pct"] = df["cycle"] / mx
 
-    # 7 ─ Scale
+    # 7 - Scale
     df_train, df_test, scaler = fit_and_scale(
         df_train, df_test, active, config
     )
-    log.info("  MinMax scaling ✓")
+    log.info("  MinMax scaling [OK]")
 
-    # 8 ─ Save sensor list
+    # 8 - Save sensor list
     save_artifact(active, "active_sensors", config)
 
-    # 9 ─ Write CSVs
+    # 9 - Write CSVs
     df_train.to_csv(pdir / f"train_{did}_processed.csv", index=False)
     df_test .to_csv(pdir / f"test_{did}_processed.csv",  index=False)
-    log.info("Preprocessing complete ✓")
+    log.info("Preprocessing complete [OK]")
 
     return {
         "train"         : df_train,
